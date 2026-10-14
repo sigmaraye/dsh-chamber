@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+# 与官方 release.yml 的全局 env 对齐：bundle-dsh.mjs 读 DSH_CHAMBER_DSH_VERSION，
+# 缺失时回退读 packages/desktop/vendor/dsh/pnpm-lock.yaml（结果同值），显式设上消除变量。
+env:
+  DSH_CHAMBER_DSH_VERSION: 0.2.0-rc.2
+
 jobs:
   build-windows:
     # windows-2022 而非 windows-latest：node-gyp 栈检测不到 VS18 工具链
@@ -40,6 +45,15 @@ jobs:
 
       - name: Assert lockfile not rewritten
         run: git diff --exit-code -- pnpm-lock.yaml
+
+      # 构建日志即证据：确认 win32 的 POSIX mode 断言已被跳过。
+      - name: Assert win32 private-state patch is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -n "process.platform !== 'win32'" packages/control-plane/src/private-file.ts \
+            || { echo "::error::win32 private-state patch missing"; exit 1; }
+          echo "patched line:"; grep -n -A2 "options.requiredMode !== undefined" packages/control-plane/src/private-file.ts
 
       - uses: actions/cache@v4
         with:
