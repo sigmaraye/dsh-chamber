@@ -1,0 +1,81 @@
+name: Build Windows (custom)
+
+# 独立最小构建腿：只产出 Windows NSIS 安装包并上传为 artifact。
+# 不使用 release.yml 的发布链——那条链在 dry_run=false 时强制要求 Apple 签名
+# 凭据（create-release 的 "Require macOS release signing credentials" 步骤），
+# fork 无证书必然失败。本腿不创建 Release、不做签名、不 publish。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    # windows-2022 而非 windows-latest：node-gyp 栈检测不到 VS18 工具链
+    # （作者在 release.yml 中记录的同一发现）。
+    # 仅 x64：bundle:dsh 会按宿主平台烘焙原生模块（node-pty 等），
+    # arm64 需要 arm64 runner，不能交叉编译。
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # vendor/harness-checkout 是 git submodule（gitlink == harness.commit）。
+          submodules: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Bootstrap vendor tree (verify pin + ensure links)
+        run: node scripts/dev/ensure-harness-vendor.mjs
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Assert lockfile not rewritten
+        run: git diff --exit-code -- pnpm-lock.yaml
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron-builder/Cache
+            ~/AppData/Local/electron/Cache
+          key: electron-toolchain-windows-${{ hashFiles('packages/desktop/package.json') }}
+          restore-keys: |
+            electron-toolchain-windows-
+
+      - name: Build and package Windows app
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm run build:desktop
+          pnpm --filter @dsh-chamber/desktop exec electron-builder --win --x64 --publish=never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Verify packaged Windows app
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node -p 'process.platform + "-" + process.arch')" = "win32-x64"
+          test -d packages/desktop/release/win-unpacked
+          RUNTIME=packages/desktop/release/win-unpacked/resources/vendor/dsh
+          test -f "$RUNTIME/node_modules/@deepseek-ai/dsh/package.json"
+          node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('$RUNTIME/package.json','utf8'));if(!p.dsh?.platform?.startsWith('win32-')){throw new Error('wrong bundled dsh platform: '+p.dsh?.platform)};console.log('bundled dsh: '+(p.dependencies?.['@deepseek-ai/dsh']??'?')+' ('+p.dsh.platform+')')"
+          ls -la packages/desktop/release/*.exe
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-chamber-win-x64
+          path: |
+            packages/desktop/release/*.exe
+            packages/desktop/release/latest.yml
+          if-no-files-found: error
+          retention-days: 14
