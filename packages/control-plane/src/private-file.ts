@@ -317,7 +317,14 @@ export function readPrivateFileNoFollow(path: string, options: PrivateFileReadOp
     if (!beforeRead.isFile() || beforeRead.nlink !== 1 || beforeRead.size > maxBytes) {
       throw new Error(`private state leaf became unsafe before read: ${path}`)
     }
-    if (options.requiredMode !== undefined && (beforeRead.mode & 0o777) !== options.requiredMode) {
+    // win32 has no POSIX mode bit: Node reports a synthetic 0o666 for regular files, so an
+    // equality assertion against 0o600 can never hold and every read would fail closed. This
+    // mirrors the write path (appendPrivateLeaf's `tightenMode !== null && platform !== 'win32'`)
+    // and assertPrivateLeafOwner's `Windows is skipped` early return; Windows privacy is proven
+    // by the icacls tighten+verify chain (desktop/win-acl.ts), not by a mode bit.
+    if (options.requiredMode !== undefined
+      && process.platform !== 'win32'
+      && (beforeRead.mode & 0o777) !== options.requiredMode) {
       throw new Error(
         `private state leaf must have mode ${options.requiredMode.toString(8).padStart(4, '0')}: ${path}`,
       )
